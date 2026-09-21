@@ -157,8 +157,15 @@ genlayer deploy --contract contracts/deliverable_qa.py
 
 or paste `contracts/deliverable_qa.py` into GenLayer Studio and deploy with no constructor arguments.
 
-Deployment evidence (contract address, deploy transaction, lifecycle transactions) is recorded in
-[`SUBMISSION.md`](SUBMISSION.md) once the contract has been deployed.
+Deployed on GenLayer Studio:
+
+- Contract: `0x68f71EB90825cb3b7759fb62b2E96c68A68Cc39e`
+- Explorer: [explorer-studio.genlayer.com/address/0x68f71EB90825cb3b7759fb62b2E96c68A68Cc39e](https://explorer-studio.genlayer.com/address/0x68f71EB90825cb3b7759fb62b2E96c68A68Cc39e)
+- Deploy transaction: `0xccb520cd68a16e134aad7f332701b202dee5aecf8108fa7325d50dfc4f0838c3`
+- Deployer: `0x790695eE6E46E813B99c50069C0e608ACD1a7E3a`
+
+The full lifecycle transaction list (pass, fail and cancel paths, payouts) and what is still to be captured are in
+[`SUBMISSION.md`](SUBMISSION.md).
 
 ## Why this is a primitive, not an app
 
