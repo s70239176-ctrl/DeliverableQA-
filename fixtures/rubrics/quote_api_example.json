@@ -1,0 +1,5 @@
+[
+  {"id": "readme_covers", "required": true, "detail": "README explains install and how to run the demo"},
+  {"id": "example_http", "required": true, "detail": "Delivery text or live demo documents GET /v1/quote returning mid and ask"},
+  {"id": "screenshot_brand", "required": false, "detail": "Demo page uses the brand colors / layout if brand_url and demo_url set"}
+]

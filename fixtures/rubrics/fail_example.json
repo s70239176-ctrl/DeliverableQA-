@@ -1,0 +1,4 @@
+[
+  {"id": "readme_covers", "required": true, "detail": "Delivery explains how to install and how to run the demo"},
+  {"id": "example_http", "required": true, "detail": "Delivery documents GET /v1/quote returning mid and ask"}
+]

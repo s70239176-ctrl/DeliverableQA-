@@ -1,0 +1,4 @@
+[
+  {"id": "states_purpose", "required": true, "detail": "Delivery text states that the page is meant for documentation or illustrative examples"},
+  {"id": "screenshot_brand", "required": false, "detail": "Demo page visually resembles the brand reference image (same layout and colors)"}
+]

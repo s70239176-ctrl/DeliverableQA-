@@ -1,0 +1,5 @@
+[
+  {"id": "states_purpose", "required": true, "detail": "Delivery text states that the page or domain is meant for use in documentation or illustrative examples"},
+  {"id": "has_info_link", "required": true, "detail": "Delivery contains a link to further information (for example a 'Learn more' or 'More information' link)"},
+  {"id": "mentions_operations", "required": false, "detail": "Delivery advises against using it in real operations or production"}
+]
