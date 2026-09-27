@@ -91,6 +91,7 @@ class _Runtime:
         self.sender = None
         self.value = u256(0)
         self.in_nondet = False
+        self.datetime = "2026-01-01T00:00:00.000000Z"  # gl.message_raw["datetime"]
 
 
 RT = _Runtime()
@@ -206,6 +207,16 @@ class _Message:
         return RT.value
 
 
+class _MessageRaw:
+    """Stand-in for gl.message_raw: a plain mapping, not an attribute namespace,
+    matching the real SDK (there is no timestamp on gl.message itself)."""
+
+    def __getitem__(self, key):
+        if key == "datetime":
+            return RT.datetime
+        raise KeyError(key)
+
+
 gl = types.SimpleNamespace(
     Contract=_Contract,
     public=types.SimpleNamespace(view=_view, write=_Write()),
@@ -214,6 +225,7 @@ gl = types.SimpleNamespace(
     nondet=types.SimpleNamespace(web=_Web(), exec_prompt=_exec_prompt),
     storage=types.SimpleNamespace(copy_to_memory=lambda obj: dataclasses.replace(obj)),
     message=_Message(),
+    message_raw=_MessageRaw(),
 )
 
 

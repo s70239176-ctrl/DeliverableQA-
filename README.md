@@ -80,10 +80,11 @@ check whose evidence is missing.
 
 | Method | Kind | Purpose |
 |---|---|---|
-| `open_escrow(job_id, spec_url, checks_json, demo_url, brand_url, pass_threshold)` | write, **payable** | Lock GEN + rubric. Rejects zero value. |
-| `deliver(job_id, delivery_url)` | write | Submit the public delivery URL; caller becomes the seller. |
+| `open_escrow(job_id, spec_url, checks_json, demo_url, brand_url, pass_threshold, seller, review_window_days)` | write, **payable** | Lock GEN + rubric, pin the intended seller, set the review window (days). Rejects zero value. |
+| `deliver(job_id, delivery_url)` | write | Submit the public delivery URL. Only the pinned `seller` may call this. |
 | `review(job_id)` | write | Consensus verdict on a delivered job. Anyone may call; once per job. |
 | `cancel(job_id)` | write | Buyer only, before delivery. |
+| `reclaim_timeout(job_id)` | write | Buyer only. If `review` still hasn't finalized a delivered job past its `deadline_date`, refunds the escrow. |
 | `withdraw()` | write | Pay out the caller's credits. |
 | `get_job(job_id)` / `get_status(job_id)` / `get_credit(addr)` | view | Read state (`get_job` returns a JSON string). |
 
@@ -104,8 +105,14 @@ Two persistent fields: `jobs: TreeMap[str, Job]` and `credits: TreeMap[Address, 
   cannot be fetched the transaction reverts and the job stays `delivered`, so `review` can be retried.
 - No storage access, no value transfer and no nested nondet inside the nondet blocks. Storage is copied out first.
 - Value moves only in `withdraw()`, after the credit is zeroed. Conservation of funds is tested.
-- Rubric, URLs and threshold are immutable after `open_escrow`. The content behind the URLs is live; use commit-pinned
-  URLs to freeze it.
+- Rubric, URLs, threshold, seller and review window are immutable after `open_escrow`. The content behind the URLs
+  is live; use commit-pinned URLs to freeze it.
+- `deliver` is authorized: only the address pinned as `seller` at `open_escrow` may call it, so an unrelated account
+  can never become the payout recipient by calling `deliver` first.
+- A delivered job that `review` never finalizes is not locked forever: past `deadline_date` the buyer may call
+  `reclaim_timeout` for a full refund. That path shares `review`'s `status == "delivered"` guard, so a job that has
+  already settled (`passed`/`failed`) can never be reclaimed, and a reclaimed (`expired`) job can never later be
+  paid out by a late `review`.
 
 ## Repository layout
 

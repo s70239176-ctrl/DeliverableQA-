@@ -17,15 +17,18 @@ Do not use `localhost` or private-IP URLs: validators fetch from the public inte
 As **Buyer (A)**, `open_escrow` with a nonzero value (e.g. `10`):
 
 ```
-job_id:         job-pass-001
-spec_url:       https://example.org
-checks_json:    [{"id":"states_purpose","required":true,"detail":"Delivery text states that the page or domain is meant for use in documentation or illustrative examples"},{"id":"has_info_link","required":true,"detail":"Delivery contains a link to further information (for example a 'Learn more' or 'More information' link)"},{"id":"mentions_operations","required":false,"detail":"Delivery advises against using it in real operations or production"}]
-demo_url:       (empty)
-brand_url:      (empty)
-pass_threshold: 80
+job_id:             job-pass-001
+spec_url:           https://example.org
+checks_json:        [{"id":"states_purpose","required":true,"detail":"Delivery text states that the page or domain is meant for use in documentation or illustrative examples"},{"id":"has_info_link","required":true,"detail":"Delivery contains a link to further information (for example a 'Learn more' or 'More information' link)"},{"id":"mentions_operations","required":false,"detail":"Delivery advises against using it in real operations or production"}]
+demo_url:           (empty)
+brand_url:          (empty)
+pass_threshold:     80
+seller:             <Seller (B)'s address>
+review_window_days: 7
 ```
 
-As **Seller (B)**: `deliver("job-pass-001", "https://example.com")`.
+As **Seller (B)**: `deliver("job-pass-001", "https://example.com")`. Any other account calling `deliver` on this
+job (even the buyer) gets `only the pinned seller may deliver`.
 Any account: `review("job-pass-001")`, then `get_job` / `get_status`.
 
 Expect `status: "passed"`, `passed: true`, score roughly 85-100. The optional `mentions_operations` check may be true or
@@ -37,12 +40,14 @@ As **Seller (B)**: `get_credit(<seller address from get_job>)` equals the escrow
 As **Buyer (A)**, `open_escrow` with a nonzero value:
 
 ```
-job_id:         job-fail-001
-spec_url:       https://example.org
-checks_json:    [{"id":"readme_covers","required":true,"detail":"Delivery explains how to install and how to run the demo"},{"id":"example_http","required":true,"detail":"Delivery documents GET /v1/quote returning mid and ask"}]
-demo_url:       (empty)
-brand_url:      (empty)
-pass_threshold: 80
+job_id:             job-fail-001
+spec_url:           https://example.org
+checks_json:        [{"id":"readme_covers","required":true,"detail":"Delivery explains how to install and how to run the demo"},{"id":"example_http","required":true,"detail":"Delivery documents GET /v1/quote returning mid and ask"}]
+demo_url:           (empty)
+brand_url:          (empty)
+pass_threshold:     80
+seller:             <Seller (B)'s address>
+review_window_days: 7
 ```
 
 As **Seller (B)**: `deliver("job-fail-001", "https://example.com")` (nothing about installs or a quote endpoint).
@@ -53,12 +58,14 @@ Expect `status: "failed"`, `passed: false`, both checks false, buyer credited. A
 ## Run 3 - cancel before delivery
 
 ```
-job_id:         job-cancel-001
-spec_url:       https://example.org
-checks_json:    [{"id":"any_check","required":true,"detail":"Delivery is relevant to the spec"}]
-demo_url:       (empty)
-brand_url:      (empty)
-pass_threshold: 70
+job_id:             job-cancel-001
+spec_url:           https://example.org
+checks_json:        [{"id":"any_check","required":true,"detail":"Delivery is relevant to the spec"}]
+demo_url:           (empty)
+brand_url:          (empty)
+pass_threshold:     70
+seller:             <Seller (B)'s address>
+review_window_days: 7
 ```
 
 Then `cancel("job-cancel-001")` as the same buyer. `get_status` is `cancelled`; `get_credit(buyer)` shows the refund.
@@ -68,15 +75,36 @@ Then `cancel("job-cancel-001")` as the same buyer. `get_status` is `cancelled`; 
 Only after Runs 1-2 work: screenshots are slower and add validator variance.
 
 ```
-job_id:         job-brand-001
-spec_url:       https://example.org
-checks_json:    [{"id":"states_purpose","required":true,"detail":"Delivery text states that the page is meant for documentation or illustrative examples"},{"id":"screenshot_brand","required":false,"detail":"Demo page visually resembles the brand reference image (same layout and colors)"}]
-demo_url:       https://example.com
-brand_url:      https://example.org
-pass_threshold: 80
+job_id:             job-brand-001
+spec_url:           https://example.org
+checks_json:        [{"id":"states_purpose","required":true,"detail":"Delivery text states that the page is meant for documentation or illustrative examples"},{"id":"screenshot_brand","required":false,"detail":"Demo page visually resembles the brand reference image (same layout and colors)"}]
+demo_url:           https://example.com
+brand_url:          https://example.org
+pass_threshold:     80
+seller:             <Seller (B)'s address>
+review_window_days: 7
 ```
 
 Seller delivers `https://example.com`; anyone calls `review`. Expect a pass.
+
+## Run 5 - reclaim after timeout (review never finalizes)
+
+```
+job_id:             job-timeout-001
+spec_url:           https://example.org
+checks_json:        [{"id":"any_check","required":true,"detail":"Delivery is relevant to the spec"}]
+demo_url:           (empty)
+brand_url:          (empty)
+pass_threshold:     70
+seller:             <Seller (B)'s address>
+review_window_days: 1
+```
+
+As **Seller (B)**: `deliver("job-timeout-001", "https://example.com")`. Do **not** call `review`. Wait until the
+next UTC day (or use a `review_window_days` of `1` and check `get_job`'s `deadline_date` against the current date),
+then as **Buyer (A)**: `reclaim_timeout("job-timeout-001")`. Expect `status: "expired"` and the escrow credited back
+to the buyer. Confirm `review("job-timeout-001")` now errors with `job is not in delivered state...` (it is
+permanently foreclosed, not merely stale) and that a second `reclaim_timeout` errors too.
 
 ## Negative tests (each must fail with a clear error)
 
@@ -87,11 +115,17 @@ Seller delivers `https://example.com`; anyone calls `review`. Expect a pass.
 | `open_escrow` with `demo_url` = `http://localhost:3000` | `demo_url must be a public http(s) URL...` |
 | `open_escrow` with `checks_json` = `[]` | `checks_json must be a JSON list...` |
 | `open_escrow` with `pass_threshold` = `0` or `101` | `pass_threshold must be 1-100` |
+| `open_escrow` with `seller` = the zero address | `seller required` |
+| `open_escrow` with `review_window_days` = `0` or `366` | `review_window_days must be 1-365` |
 | `review` on an `open` job | `job is not in delivered state...` |
 | `deliver` twice on the same job | `job is not open` |
+| `deliver` from an account other than the pinned `seller` | `only the pinned seller may deliver` |
 | `review` twice on the same job | `job is not in delivered state...` |
 | `cancel` from Seller (B) | `only the buyer can cancel` |
 | `cancel` after `deliver` | `only an open (undelivered) job can be cancelled` |
+| `reclaim_timeout` before `deadline_date` | `review deadline has not passed yet...` |
+| `reclaim_timeout` from Seller (B) | `only the buyer can reclaim` |
+| `reclaim_timeout` on an `open`, `passed`, `failed`, `cancelled` or already-`expired` job | `only a delivered job past its review deadline can be reclaimed` |
 | `withdraw` with no credit | `nothing to withdraw` |
 
 All of these are also asserted in `tests/simulated`.

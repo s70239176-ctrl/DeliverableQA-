@@ -4,26 +4,31 @@ DeliverableQA is a single Intelligent Contract with three actors and one consens
 
 | Actor | Role |
 |---|---|
-| **Buyer** | Calls `open_escrow`: locks GEN, an immutable rubric, a spec URL, an optional demo/brand URL, and a pass threshold. |
-| **Seller** | Whoever first calls `deliver` on an open job. Submits a public delivery URL and becomes the payee. |
+| **Buyer** | Calls `open_escrow`: locks GEN, an immutable rubric, a spec URL, an optional demo/brand URL, a pass threshold, the **pinned seller address**, and a review window (days). |
+| **Seller** | The address pinned at `open_escrow`. Only that address may call `deliver` on the job; submits a public delivery URL and becomes the payee. |
 | **Anyone** | Calls `review` on a delivered job. Validators fetch live evidence and judge it. Then `withdraw` for the winning party. |
+| **Buyer (recovery)** | If `review` never finalizes before `deadline_date`, calls `reclaim_timeout` to get the escrow back. |
 
 ## State machine
 
 ```
               open_escrow                deliver                 review (consensus)
- (nothing) ----------------> open ---------------------> delivered ----+----> passed  (seller credited)
-                              |                                        |
-                              | cancel (buyer only)                    +----> failed  (buyer credited)
-                              v
-                          cancelled (buyer credited)
+ (nothing) ----------------> open ---------------------> delivered ----+----> passed   (seller credited)
+                              |                              |         |
+                              | cancel (buyer only)          |         +----> failed    (buyer credited)
+                              v                              | reclaim_timeout (buyer, past deadline_date)
+                          cancelled (buyer credited)          v
+                                                           expired (buyer credited)
 
  withdraw(): pays out credits[caller] at any time, independent of job state.
 ```
 
-`passed`, `failed` and `cancelled` are terminal. A job can be reviewed **once**: `review` requires `delivered`, and the
-verdict write moves it out of that state in the same transaction. If consensus fails, the transaction reverts and the
-job stays `delivered`, so `review` can be retried.
+`passed`, `failed`, `cancelled` and `expired` are terminal. A job can be reviewed **once**: `review` requires
+`delivered`, and the verdict write moves it out of that state in the same transaction. If consensus fails, the
+transaction reverts and the job stays `delivered`, so `review` can be retried -- right up until `deadline_date`.
+`reclaim_timeout` requires the *same* `delivered` guard, so whichever of `review` / `reclaim_timeout` lands first
+forecloses the other in the same transaction that credits a payee: settlement can never be reclaimed, and a
+reclaimed job can never later be "reviewed" into a payout.
 
 ## Storage layout
 
@@ -33,11 +38,13 @@ job stays `delivered`, so `review` can be retried.
 | `credits` | `TreeMap[Address, u256]` | pull-pattern balances |
 
 `Job` is an `@allow_storage @dataclass`: `buyer`, `seller`, `spec_url`, `checks_json`, `demo_url`, `brand_url`,
-`delivery_url`, `pass_threshold: u32`, `escrow: u256`, `status`, `score: u32`, `passed`, `result_json`.
-No `list`, `dict` or `int` is ever persisted. `scripts/preflight.py` enforces this.
+`delivery_url`, `pass_threshold: u32`, `review_window_days: u32`, `escrow: u256`, `status`, `score: u32`, `passed`,
+`result_json`, `deadline_date`. No `list`, `dict` or `int` is ever persisted. `scripts/preflight.py` enforces this.
 
-`checks_json`, `spec_url`, `demo_url`, `brand_url` and `pass_threshold` are written once in `open_escrow` and never
-modified afterward.
+`checks_json`, `spec_url`, `demo_url`, `brand_url`, `pass_threshold`, `seller` and `review_window_days` are written
+once in `open_escrow` and never modified afterward. `deadline_date` is set exactly once, in `deliver`, as
+`_add_days(_now(), review_window_days)` -- deterministic civil-calendar arithmetic over the transaction's own
+`gl.message_raw["datetime"]`, so leader and validators (and the deterministic zone) always agree on it.
 
 ## Value flow (pull payments)
 
@@ -69,8 +76,9 @@ whatever the URLs serve at review time. Consequences:
 
 ## Known design limits
 
-* **Seller slot is first-come.** The seller is set by the first `deliver` call. A stranger can deliver junk first; the
-  job then fails and the buyer is refunded (nobody loses funds, but the buyer must reopen). A production version would
-  pin an intended seller in `open_escrow` (needs one more argument, so it is outside this spec).
-* **No timeouts.** A delivered job that nobody reviews stays locked, and an open job stays open until cancelled.
 * **One judgment, no appeal.** Verdicts are final once accepted.
+* **`reclaim_timeout` refunds the buyer, it does not adjudicate.** If the seller *did* deliver something reviewable
+  but nobody ever called `review` (or `review` kept hitting a transient fetch failure) before `deadline_date`, the
+  buyer can still walk away with a full refund even though the delivery may have been fine. That is the accepted
+  trade-off for a bounded lock: `review` remains callable (and preferred) right up until someone calls
+  `reclaim_timeout`, so a race to finalize honestly still beats an unearned refund.

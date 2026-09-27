@@ -7,9 +7,11 @@ from dataclasses import dataclass  # stdlib; needed for the @allow_storage recor
 # =============================================================================
 # DeliverableQA - escrow + quality court for agent-to-agent delivery.
 #
-# Flow: buyer open_escrow (locks GEN + immutable rubric) -> seller deliver (URLs)
-#       -> anyone review (validators fetch evidence, judge, reach consensus)
+# Flow: buyer open_escrow (locks GEN + immutable rubric + pins the intended seller
+#       + sets a review window) -> pinned seller deliver (URLs) -> anyone review
+#       (validators fetch evidence, judge, reach consensus)
 #       -> pass: seller credited / fail: buyer credited -> winner withdraw().
+#       If review never finalizes before the deadline, the buyer can reclaim_timeout().
 #
 # Checks JSON example (pass as the `checks_json` string in open_escrow):
 # [
@@ -32,6 +34,8 @@ MAX_JOB_ID_LEN = 64
 FETCH_FAILED = "FETCH_FAILED"
 NOT_PROVIDED = "NOT_PROVIDED"
 ZERO_ADDRESS_HEX = "0x0000000000000000000000000000000000000000"
+MIN_REVIEW_WINDOW_DAYS = 1
+MAX_REVIEW_WINDOW_DAYS = 365
 
 
 # Official send-to-EOA pattern (docs: Value Transfers). Only used in withdraw(),
@@ -60,18 +64,20 @@ class CheckResult:
 @dataclass
 class Job:
     buyer: Address
-    seller: Address
+    seller: Address           # pinned at open_escrow; only this address may deliver()
     spec_url: str
     checks_json: str          # immutable after open_escrow
     demo_url: str
     brand_url: str            # optional; empty string if unused
     delivery_url: str
     pass_threshold: u32       # e.g. 80
+    review_window_days: u32   # immutable after open_escrow; clock starts at deliver()
     escrow: u256
-    status: str               # open | delivered | passed | failed | cancelled
+    status: str               # open | delivered | passed | failed | cancelled | expired
     score: u32
     passed: bool
     result_json: str          # accepted verdict JSON
+    deadline_date: str        # "" until deliver(); else "YYYY-MM-DD" past which reclaim_timeout() is allowed
 
 
 # ----------------------------- pure helpers (no nondet, no storage) ----------
@@ -121,6 +127,57 @@ def _check_job_id(job_id: str) -> str:
     if job_id == "" or len(job_id) > MAX_JOB_ID_LEN:
         raise gl.vm.UserError("job_id must be 1-" + str(MAX_JOB_ID_LEN) + " chars")
     return job_id
+
+
+# ----------------------------- deterministic date math -----------------------
+# No datetime parsing library; lexicographic-safe "YYYY-MM-DD" strings only, via
+# the standard civil-calendar <-> day-count algorithm (Howard Hinnant's
+# days_from_civil / civil_from_days). Every validator computes the identical
+# string from the identical consensus-agreed transaction time, so this stays
+# deterministic across leader and validators exactly like the rest of the
+# accounting code (no gl.nondet involved).
+def _days_from_civil(y: int, m: int, d: int) -> int:
+    y -= 1 if m <= 2 else 0
+    era = (y if y >= 0 else y - 399) // 400
+    yoe = y - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+
+def _civil_from_days(z: int) -> "tuple[int, int, int]":
+    z += 719468
+    era = (z if z >= 0 else z - 146096) // 146097
+    doe = z - era * 146097
+    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    y = yoe + era * 400
+    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    mp = (5 * doy + 2) // 153
+    d = doy - (153 * mp + 2) // 5 + 1
+    m = mp + 3 if mp < 10 else mp - 9
+    y += 1 if m <= 2 else 0
+    return y, m, d
+
+
+def _date_str(iso: str) -> str:
+    """Extract the YYYY-MM-DD prefix of an ISO-8601 UTC message datetime."""
+    if len(iso) >= 10 and iso[4] == "-" and iso[7] == "-":
+        return iso[0:10]
+    raise gl.vm.UserError("unexpected message datetime: " + iso[:32])
+
+
+def _add_days(iso: str, days: int) -> str:
+    d = _date_str(iso)
+    n = _days_from_civil(int(d[0:4]), int(d[5:7]), int(d[8:10])) + days
+    y, m, day = _civil_from_days(n)
+    return "%04d-%02d-%02d" % (y, m, day)
+
+
+def _now() -> str:
+    # SDK note: gl.message has no timestamp field. Transaction time arrives as
+    # gl.message_raw["datetime"] (fixed-width ISO-8601 UTC), and is part of the
+    # consensus-agreed transaction context, not a nondet fetch.
+    return str(gl.message_raw["datetime"])
 
 
 def _parse_checks(checks_json: str) -> list:
@@ -434,7 +491,8 @@ class DeliverableQA(gl.Contract):
     # ---- writes ----
     @gl.public.write.payable
     def open_escrow(self, job_id: str, spec_url: str, checks_json: str, demo_url: str,
-                    brand_url: str, pass_threshold: u32) -> None:
+                    brand_url: str, pass_threshold: u32, seller: Address,
+                    review_window_days: u32) -> None:
         job_id = _check_job_id(job_id)
         if job_id in self.jobs:
             raise gl.vm.UserError("job_id already exists")
@@ -448,21 +506,30 @@ class DeliverableQA(gl.Contract):
         threshold = int(pass_threshold)
         if threshold < 1 or threshold > 100:
             raise gl.vm.UserError("pass_threshold must be 1-100")
+        # Pin the intended seller now, at the buyer's own risk/choice, so an unrelated
+        # account cannot become the payee simply by calling deliver() first.
+        if seller == Address(ZERO_ADDRESS_HEX):
+            raise gl.vm.UserError("seller required")
+        window = int(review_window_days)
+        if window < MIN_REVIEW_WINDOW_DAYS or window > MAX_REVIEW_WINDOW_DAYS:
+            raise gl.vm.UserError("review_window_days must be %d-%d" % (MIN_REVIEW_WINDOW_DAYS, MAX_REVIEW_WINDOW_DAYS))
 
         self.jobs[job_id] = Job(
             buyer=gl.message.sender_address,
-            seller=Address(ZERO_ADDRESS_HEX),  # unset until deliver()
+            seller=seller,
             spec_url=spec_url,
             checks_json=checks_json,
             demo_url=demo_url,
             brand_url=brand_url,
             delivery_url="",
             pass_threshold=u32(threshold),
+            review_window_days=u32(window),
             escrow=value,
             status="open",
             score=u32(0),
             passed=False,
             result_json="",
+            deadline_date="",
         )
         print("[DeliverableQA] escrow opened: " + job_id)
 
@@ -471,10 +538,15 @@ class DeliverableQA(gl.Contract):
         job = self._get(job_id)
         if job.status != "open":
             raise gl.vm.UserError("job is not open")
+        if gl.message.sender_address != job.seller:
+            raise gl.vm.UserError("only the pinned seller may deliver")
         url = _check_url(delivery_url, "delivery_url", True)
-        job.seller = gl.message.sender_address
         job.delivery_url = url
         job.status = "delivered"
+        # The review-timeout clock starts now, not at open_escrow: an open job sitting
+        # unfulfilled costs the buyer nothing extra (cancel() is always available), but a
+        # delivered job is locked until reviewed, so that is what needs a bound.
+        job.deadline_date = _add_days(_now(), int(job.review_window_days))
         print("[DeliverableQA] delivered: " + job_id)
 
     @gl.public.write
@@ -533,6 +605,26 @@ class DeliverableQA(gl.Contract):
         print("[DeliverableQA] cancelled: " + job_id)
 
     @gl.public.write
+    def reclaim_timeout(self, job_id: str) -> None:
+        # Recovery path for a delivered job whose review can never finalize (the spec
+        # URL is permanently gone, validators keep disagreeing, everyone forgets to call
+        # review, etc). Gated on status == "delivered", the same guard review() itself
+        # requires: review() and reclaim_timeout() both flip that status in the same
+        # transaction that credits a payee, so whichever one lands first forecloses the
+        # other for good -- settlement (status "passed"/"failed") is never reclaimable.
+        job = self._get(job_id)
+        if gl.message.sender_address != job.buyer:
+            raise gl.vm.UserError("only the buyer can reclaim")
+        if job.status != "delivered":
+            raise gl.vm.UserError("only a delivered job past its review deadline can be reclaimed")
+        if _date_str(_now()) < job.deadline_date:
+            raise gl.vm.UserError("review deadline has not passed yet (deadline " + job.deadline_date + ")")
+        self._credit(job.buyer, job.escrow)
+        job.escrow = u256(0)
+        job.status = "expired"
+        print("[DeliverableQA] reclaimed after timeout: " + job_id)
+
+    @gl.public.write
     def withdraw(self) -> None:
         sender = gl.message.sender_address
         amount = self.credits.get(sender, u256(0))
@@ -566,6 +658,8 @@ class DeliverableQA(gl.Contract):
             "brand_url": job.brand_url,
             "delivery_url": job.delivery_url,
             "pass_threshold": int(job.pass_threshold),
+            "review_window_days": int(job.review_window_days),
+            "deadline_date": job.deadline_date,
             "escrow": str(int(job.escrow)),   # string: u256 can exceed JSON-safe integers
             "status": job.status,
             "score": int(job.score),
@@ -591,20 +685,27 @@ class DeliverableQA(gl.Contract):
 # 1. Deploy in Studio. The constructor takes no arguments.
 # 2. Fund the caller with the faucet droplet.
 # 3. open_escrow with a real public spec_url (raw GitHub markdown or example.org),
-#    the checks_json above, demo_url optional, pass_threshold 80, and a nonzero value.
-# 4. Switch account. deliver with a public delivery_url.
+#    the checks_json above, demo_url optional, pass_threshold 80, the intended seller's
+#    address, a review_window_days (1-365), and a nonzero value.
+# 4. Switch to the pinned seller's account. deliver with a public delivery_url.
+#    (Any other account calling deliver() gets "only the pinned seller may deliver".)
 # 5. review. Watch the transaction modal: leader eq output, validator votes, SUCCESS/ERROR.
 # 6. get_job should show status passed/failed plus result_json.
 # 7. The winning party (seller on pass, buyer on fail) calls withdraw().
+# 8. If review() cannot finalize before deadline_date (from get_job), the buyer may
+#    instead call reclaim_timeout() to get the escrow back; this only works while the
+#    job is still "delivered", so it can never fire after a verdict has already settled.
 #
 # WARNINGS
 # - Never use localhost / private-IP URLs: validators fetch from the public internet.
 # - Keep first demo URLs small and public. Prefer RAW text URLs for spec/delivery
 #   (raw.githubusercontent.com), since web.get does not run JavaScript.
-# - Whoever calls deliver() first becomes the seller. Production versions should
-#   pin an intended seller at open_escrow (needs an extra argument, so it is not in this spec).
+# - The seller is pinned at open_escrow and checked in deliver(); an unrelated account
+#   can no longer become the payee by calling deliver() first.
 # - If review() errors (e.g. spec unreachable, validators disagree), the tx reverts,
-#   the job stays "delivered", and review can be retried.
+#   the job stays "delivered", and review can be retried -- right up until deadline_date,
+#   after which the buyer can reclaim_timeout() instead. Once "passed"/"failed"/"cancelled"/
+#   "expired" is reached that job is terminal; nothing pays out twice.
 # - Studio simulates balances locally. withdraw() uses the official emit_transfer API so the
 #   same file can move to testnet; credits accounting stays correct either way.
 # =============================================================================

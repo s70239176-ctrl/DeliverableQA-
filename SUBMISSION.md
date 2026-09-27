@@ -27,15 +27,41 @@ single trusted judge. Validators independently re-fetching evidence and re-judgi
 
 | Claim | Evidence | Status |
 |---|---|---|
-| Static invariants (Depends hash, storage types, decorators, nondet rules, no `strict_eq`) | `python scripts/preflight.py` | 78/78 checks pass |
+| Static invariants (Depends hash, storage types, decorators, nondet rules, no `strict_eq`) | `python scripts/preflight.py` | 84/84 checks pass |
 | Settlement truth table | `python scripts/local_helper_check.py` | 40/40 checks pass |
-| Contract logic against a fake SDK (state machine, payouts, consensus predicate, forgery, evidence limits, fund conservation) | `python -m unittest discover -s tests/simulated` | 56/56 tests pass |
+| Contract logic against a fake SDK (state machine, payouts, consensus predicate, forgery, evidence limits, fund conservation, seller pinning, timeout recovery) | `python -m unittest discover -s tests/simulated` | 67/67 tests pass |
 | The tests and preflight actually have teeth | `python scripts/mutation_check.py` | 36/36 deliberate bugs caught |
-| Deploys and runs on GenLayer Studio: constructor, full pass / fail / cancel lifecycles, payouts | Explorer transactions below (19 txs, all FINALIZED, consensus Accepted) | **Observed on-chain** |
+| Deploys and runs on GenLayer Studio: constructor, full pass / fail / cancel lifecycles, payouts | Explorer transactions below (19 txs, all FINALIZED, consensus Accepted) | **STALE - captured against the pre-fix contract, see below** |
 | Verdict contents (score, per-check results) and validator votes for each `review` | `get_job` output and the explorer's per-transaction consensus view | **NOT YET CAPTURED** |
+| Seller pinning and `reclaim_timeout` on live Studio (post-fix contract) | Explorer transactions | **NOT YET CAPTURED - redeploy pending, see below** |
 
 The simulated suite cannot prove GenVM sandbox semantics, real validator behavior or real LLM output quality.
 Anything marked "not yet done" must be filled in with real transaction evidence before it is claimed.
+
+## Steward-requested fix (this revision)
+
+A steward review flagged two gaps against the fund-safety bar, both previously called out under "Known
+limitations" below:
+
+1. **Seller authorization.** `open_escrow` now takes a `seller: Address` argument; `deliver` requires
+   `gl.message.sender_address == job.seller`. An unrelated account can no longer become the payout recipient by
+   calling `deliver` first.
+2. **Escrow recovery.** `open_escrow` also takes `review_window_days` (1-365). `deliver` stamps
+   `deadline_date = _add_days(gl.message_raw["datetime"], review_window_days)`. If `review` still hasn't finalized
+   the job by that date, the buyer may call the new `reclaim_timeout` to get the escrow back. `reclaim_timeout`
+   shares `review`'s `status == "delivered"` guard, so whichever of the two lands first in a transaction forecloses
+   the other for good -- a settled job (`passed`/`failed`) can never later be reclaimed, and a reclaimed
+   (`expired`) job can never later be paid out by a late `review`.
+
+See `docs/ARCHITECTURE.md` (state machine, storage layout) and `docs/STUDIO_TEST_PLAN.md` (Run 5, new negative
+tests) for the full detail. All 67 simulated tests, all 84 preflight checks, and all 36 mutation-check mutants
+pass against the updated `contracts/deliverable_qa.py`.
+
+**This changes `open_escrow`'s signature** (two new required arguments), so it is a breaking change from the
+contract address below -- the on-chain evidence table under "On-chain evidence" was captured against the
+*pre-fix* contract and needs a fresh deploy + a new evidence pass (Run 1-5 of `docs/STUDIO_TEST_PLAN.md`) before
+this revision can be claimed as verified on-chain. `<TODO: fill in the new contract address and explorer link
+after redeploying, matching this revision of contracts/deliverable_qa.py>`
 
 ## On-chain evidence
 
@@ -88,10 +114,13 @@ What this shows (and no more):
 
 ## Known limitations
 
-- **Seller slot is first-come**: whoever calls `deliver` first is the seller. Pinning a seller needs one more argument.
 - **Live evidence**: URL contents can change after `deliver`. Use commit-pinned URLs to freeze them.
 - **Threshold straddle**: a true score near `pass_threshold` can fail consensus (by design; see docs/CONSENSUS.md).
-- **No timeouts or appeals**: an unreviewed delivered job stays locked; accepted verdicts are final.
+- **No appeals**: accepted verdicts are final. `reclaim_timeout` is a refund for a *stuck* job, not an appeal of a
+  delivered `review` verdict.
+- **`reclaim_timeout` does not adjudicate**: if the seller delivered something reviewable but nobody called
+  `review` before `deadline_date`, the buyer still gets a full refund. `review` remains callable (and preferred)
+  right up until someone calls `reclaim_timeout`, so this only bites when nobody ever finalizes.
 - **`emit_transfer` in Studio**: payout uses the official EVM-interface transfer; if Studio's local ledger rejects it,
   credit accounting is still correct and only the payout call fails.
 - **Depends hash**: the file uses the hash published in the GenLayer docs. If Studio's boilerplate differs, copy Studio's.

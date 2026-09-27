@@ -72,11 +72,12 @@ class Base(unittest.TestCase):
         fg.RT.pages[SPEC] = (200, spec.encode())
         fg.RT.pages[DELIV] = (200, delivery.encode())
 
-    def open(self, job_id="job1", checks="pass_example", value=100, spec=SPEC, demo="", brand="", threshold=80):
+    def open(self, job_id="job1", checks="pass_example", value=100, spec=SPEC, demo="", brand="", threshold=80,
+             seller=SELLER, window=7):
         self.deposited += value
         return self.call(self.c.open_escrow, BUYER, job_id, spec, rubric(checks) if checks in
                          ("pass_example", "fail_example", "brand_example", "cancel_example", "quote_api_example")
-                         else checks, demo, brand, fg.u32(threshold), value=value)
+                         else checks, demo, brand, fg.u32(threshold), seller, fg.u32(window), value=value)
 
     def deliver(self, job_id="job1", url=DELIV, sender=SELLER):
         return self.call(self.c.deliver, sender, job_id, url)
@@ -483,25 +484,33 @@ class TestHelpers(Base):
 class TestOpenEscrow(Base):
     def test_rejections(self):
         c = self.c
+
+        def oe(job_id, spec, checks, demo="", brand="", threshold=80, seller=SELLER, window=7, value=5):
+            return self.call(c.open_escrow, BUYER, job_id, spec, checks, demo, brand, fg.u32(threshold), seller,
+                             fg.u32(window), value=value)
+
         cases = [
-            ("escrow required", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, rubric("pass_example"), "", "", fg.u32(80), value=0)),
-            ("spec_url required", lambda: self.call(c.open_escrow, BUYER, "a", "", rubric("pass_example"), "", "", fg.u32(80), value=5)),
-            ("spec_url must be a public", lambda: self.call(c.open_escrow, BUYER, "a", "ftp://x.org", rubric("pass_example"), "", "", fg.u32(80), value=5)),
-            ("demo_url must be a public", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, rubric("pass_example"), "http://localhost:3000", "", fg.u32(80), value=5)),
-            ("brand_url must be a public", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, rubric("pass_example"), "", "http://10.0.0.1/x.png", fg.u32(80), value=5)),
-            ("not valid JSON", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, "{oops", "", "", fg.u32(80), value=5)),
-            ("must be a JSON list", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, "[]", "", "", fg.u32(80), value=5)),
-            ("must be a JSON list", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, "{}", "", "", fg.u32(80), value=5)),
-            ("each check must be an object", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, '["x"]', "", "", fg.u32(80), value=5)),
-            ("non-empty string id", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, '[{"id":""}]', "", "", fg.u32(80), value=5)),
-            ("duplicate check id", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, '[{"id":"x"},{"id":"x"}]', "", "", fg.u32(80), value=5)),
-            ("required must be true/false", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, '[{"id":"x","required":"yes"}]', "", "", fg.u32(80), value=5)),
-            ("pass_threshold must be 1-100", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, rubric("pass_example"), "", "", fg.u32(0), value=5)),
-            ("pass_threshold must be 1-100", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, rubric("pass_example"), "", "", fg.u32(101), value=5)),
-            ("job_id must be", lambda: self.call(c.open_escrow, BUYER, "  ", SPEC, rubric("pass_example"), "", "", fg.u32(80), value=5)),
-            ("job_id must be", lambda: self.call(c.open_escrow, BUYER, "x" * 65, SPEC, rubric("pass_example"), "", "", fg.u32(80), value=5)),
-            ("must be a JSON list", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, json.dumps([{"id": "c%d" % i} for i in range(21)]), "", "", fg.u32(80), value=5)),
-            ("too long", lambda: self.call(c.open_escrow, BUYER, "a", SPEC, json.dumps([{"id": "c", "detail": "d" * 7000}]), "", "", fg.u32(80), value=5)),
+            ("escrow required", lambda: oe("a", SPEC, rubric("pass_example"), value=0)),
+            ("spec_url required", lambda: oe("a", "", rubric("pass_example"))),
+            ("spec_url must be a public", lambda: oe("a", "ftp://x.org", rubric("pass_example"))),
+            ("demo_url must be a public", lambda: oe("a", SPEC, rubric("pass_example"), demo="http://localhost:3000")),
+            ("brand_url must be a public", lambda: oe("a", SPEC, rubric("pass_example"), brand="http://10.0.0.1/x.png")),
+            ("not valid JSON", lambda: oe("a", SPEC, "{oops")),
+            ("must be a JSON list", lambda: oe("a", SPEC, "[]")),
+            ("must be a JSON list", lambda: oe("a", SPEC, "{}")),
+            ("each check must be an object", lambda: oe("a", SPEC, '["x"]')),
+            ("non-empty string id", lambda: oe("a", SPEC, '[{"id":""}]')),
+            ("duplicate check id", lambda: oe("a", SPEC, '[{"id":"x"},{"id":"x"}]')),
+            ("required must be true/false", lambda: oe("a", SPEC, '[{"id":"x","required":"yes"}]')),
+            ("pass_threshold must be 1-100", lambda: oe("a", SPEC, rubric("pass_example"), threshold=0)),
+            ("pass_threshold must be 1-100", lambda: oe("a", SPEC, rubric("pass_example"), threshold=101)),
+            ("job_id must be", lambda: oe("  ", SPEC, rubric("pass_example"))),
+            ("job_id must be", lambda: oe("x" * 65, SPEC, rubric("pass_example"))),
+            ("must be a JSON list", lambda: oe("a", SPEC, json.dumps([{"id": "c%d" % i} for i in range(21)]))),
+            ("too long", lambda: oe("a", SPEC, json.dumps([{"id": "c", "detail": "d" * 7000}]))),
+            ("seller required", lambda: oe("a", SPEC, rubric("pass_example"), seller=addr("0"))),
+            ("review_window_days must be", lambda: oe("a", SPEC, rubric("pass_example"), window=0)),
+            ("review_window_days must be", lambda: oe("a", SPEC, rubric("pass_example"), window=366)),
         ]
         for text, fn in cases:
             with self.subTest(text):
@@ -513,12 +522,14 @@ class TestOpenEscrow(Base):
         self.assert_error(lambda: self.open("dup"), "already exists")
 
     def test_stored_record_matches_inputs(self):
-        self.open("s1", demo=DEMO, brand=BRAND, value=42, threshold=77)
+        self.open("s1", demo=DEMO, brand=BRAND, value=42, threshold=77, window=14)
         j = self.job("s1")
         self.assertEqual((j["status"], j["escrow"], j["pass_threshold"]), ("open", "42", 77))
         self.assertEqual((j["demo_url"], j["brand_url"], j["delivery_url"]), (DEMO, BRAND, ""))
         self.assertEqual(j["buyer"], BUYER.as_hex)
-        self.assertEqual(j["seller"], "0x" + "0" * 40)
+        self.assertEqual(j["seller"], SELLER.as_hex)   # pinned at open, not first-come
+        self.assertEqual(j["review_window_days"], 14)
+        self.assertEqual(j["deadline_date"], "")        # unset until deliver()
         self.assertIsNone(j["result"])
         self.assertEqual([c["id"] for c in j["checks"]], PASS_IDS)
 
@@ -526,7 +537,8 @@ class TestOpenEscrow(Base):
 class TestStateMachine(Base):
     def test_only_open_escrow_is_payable(self):
         kinds = {n: getattr(getattr(self.c, n), "_gl_kind", None)
-                 for n in ("open_escrow", "deliver", "review", "cancel", "withdraw", "get_job", "get_credit", "get_status")}
+                 for n in ("open_escrow", "deliver", "review", "cancel", "reclaim_timeout", "withdraw",
+                           "get_job", "get_credit", "get_status")}
         self.assertEqual([n for n, k in kinds.items() if k == "payable"], ["open_escrow"])
         self.assertEqual(kinds["get_job"], "view")
         self.pages()
@@ -538,17 +550,35 @@ class TestStateMachine(Base):
         self.open()
         self.assert_error(self.review, "not in delivered state")
 
-    def test_deliver_only_when_open_and_sets_seller(self):
+    def test_deliver_only_when_open_and_by_the_pinned_seller(self):
         self.open()
         self.deliver()
         j = self.job()
         self.assertEqual((j["status"], j["seller"], j["delivery_url"]), ("delivered", SELLER.as_hex, DELIV))
         self.assert_error(self.deliver, "not open")
 
+    def test_deliver_by_unpinned_account_rejected_even_if_first(self):
+        # The exact race the pin closes: a stranger (or even the buyer) can no longer
+        # become the payee by racing to call deliver() first.
+        self.open(seller=SELLER)
+        for stranger in (THIRD, BUYER):
+            with self.subTest(stranger=stranger):
+                self.assert_error(lambda: self.deliver(sender=stranger), "only the pinned seller")
+        j = self.job()
+        self.assertEqual((j["status"], j["seller"]), ("open", SELLER.as_hex))
+        self.deliver()   # the pinned seller still can
+        self.assertEqual(self.job()["status"], "delivered")
+
     def test_deliver_url_validated(self):
         self.open()
         self.assert_error(lambda: self.deliver(url="http://localhost/x"), "delivery_url must be a public")
         self.assert_error(lambda: self.deliver(url=""), "delivery_url required")
+
+    def test_deliver_sets_deadline_from_review_window(self):
+        fg.RT.datetime = "2026-03-01T12:00:00.000000Z"
+        self.open(window=10)
+        self.deliver()
+        self.assertEqual(self.job()["deadline_date"], "2026-03-11")
 
     def test_review_twice_rejected_and_cannot_double_pay(self):
         self.full_flow(scripted(verdict()))
@@ -585,7 +615,9 @@ class TestStateMachine(Base):
 
     def test_unknown_job_errors(self):
         for fn in (lambda: self.job("nope"), lambda: self.deliver("nope"), lambda: self.review("nope"),
-                   lambda: self.call(self.c.cancel, BUYER, "nope"), lambda: self.call(self.c.get_status, THIRD, "nope")):
+                   lambda: self.call(self.c.cancel, BUYER, "nope"),
+                   lambda: self.call(self.c.reclaim_timeout, BUYER, "nope"),
+                   lambda: self.call(self.c.get_status, THIRD, "nope")):
             self.assert_error(fn, "unknown job_id")
 
     def test_get_status_and_credit_views(self):
@@ -625,6 +657,91 @@ class TestStateMachine(Base):
         self.call(self.c.withdraw, BUYER); check()
         self.assertEqual(self.job("u")["escrow"], "13")   # still locked, never reviewed
         self.assertEqual(sum(v for _, v in fg.RT.transfers), 100 + 250 + 7)
+
+
+# ============================================================================
+# Timeout recovery (reclaim_timeout)
+# ============================================================================
+class TestReclaimTimeout(Base):
+    def _deliver_at(self, when, window=5):
+        fg.RT.datetime = when
+        self.open(window=window)
+        self.deliver()
+
+    def test_reclaim_before_deadline_rejected(self):
+        self._deliver_at("2026-03-01T00:00:00.000000Z", window=5)
+        fg.RT.datetime = "2026-03-05T23:59:59.000000Z"   # deadline is 2026-03-06
+        self.assert_error(lambda: self.call(self.c.reclaim_timeout, BUYER, "job1"), "deadline has not passed")
+        self.assertEqual(self.job()["status"], "delivered")
+
+    def test_reclaim_on_deadline_day_succeeds_and_refunds_buyer(self):
+        self._deliver_at("2026-03-01T00:00:00.000000Z", window=5)
+        fg.RT.datetime = "2026-03-06T00:00:00.000000Z"    # exactly the deadline date
+        self.call(self.c.reclaim_timeout, BUYER, "job1")
+        j = self.job()
+        self.assertEqual((j["status"], j["escrow"]), ("expired", "0"))
+        self.assertEqual(self.credit(BUYER), 100)
+        self.assertEqual(self.credit(SELLER), 0)
+        self.call(self.c.withdraw, BUYER)
+        self.assertEqual(fg.RT.transfers, [(BUYER, 100)])
+
+    def test_reclaim_long_after_deadline_still_works(self):
+        self._deliver_at("2026-01-01T00:00:00.000000Z", window=1)
+        fg.RT.datetime = "2027-06-15T00:00:00.000000Z"
+        self.call(self.c.reclaim_timeout, BUYER, "job1")
+        self.assertEqual(self.job()["status"], "expired")
+
+    def test_only_buyer_can_reclaim(self):
+        self._deliver_at("2026-03-01T00:00:00.000000Z", window=1)
+        fg.RT.datetime = "2026-03-10T00:00:00.000000Z"
+        for stranger in (SELLER, THIRD):
+            with self.subTest(stranger=stranger):
+                self.assert_error(lambda: self.call(self.c.reclaim_timeout, stranger, "job1"), "only the buyer")
+
+    def test_cannot_reclaim_an_open_undelivered_job(self):
+        self.open(window=1)   # never delivered; buyer already has cancel() for this
+        self.assert_error(lambda: self.call(self.c.reclaim_timeout, BUYER, "job1"),
+                          "only a delivered job past its review deadline")
+
+    def test_cannot_reclaim_a_cancelled_job(self):
+        self.open(window=1)
+        self.call(self.c.cancel, BUYER, "job1")
+        self.assert_error(lambda: self.call(self.c.reclaim_timeout, BUYER, "job1"),
+                          "only a delivered job past its review deadline")
+
+    def test_cannot_reclaim_after_settlement_no_double_pay(self):
+        # The exact invariant the steward asked for: once review() has settled the job
+        # (even long past the deadline), reclaim_timeout() must be foreclosed for good.
+        self.pages()
+        fg.RT.llm = scripted(verdict())
+        self._deliver_at("2026-03-01T00:00:00.000000Z", window=1)
+        self.review()
+        self.assertEqual(self.job()["status"], "passed")
+        fg.RT.datetime = "2027-01-01T00:00:00.000000Z"   # long past any deadline
+        self.assert_error(lambda: self.call(self.c.reclaim_timeout, BUYER, "job1"),
+                          "only a delivered job past its review deadline")
+        self.assertEqual(self.credit(SELLER), 100)
+        self.assertEqual(self.credit(BUYER), 0)
+
+    def test_cannot_reclaim_twice(self):
+        self._deliver_at("2026-03-01T00:00:00.000000Z", window=1)
+        fg.RT.datetime = "2026-03-10T00:00:00.000000Z"
+        self.call(self.c.reclaim_timeout, BUYER, "job1")
+        self.assert_error(lambda: self.call(self.c.reclaim_timeout, BUYER, "job1"),
+                          "only a delivered job past its review deadline")
+
+    def test_review_can_still_finalize_normally_after_deadline_if_it_wins_the_race(self):
+        # A late-but-successful review() is a strictly better outcome than a refund, and
+        # reaching deadline_date does not itself block review() -- only reclaim_timeout()
+        # is deadline-gated. Whichever of the two lands first settles the job for good.
+        self.pages()
+        fg.RT.llm = scripted(verdict())
+        self._deliver_at("2026-03-01T00:00:00.000000Z", window=1)
+        fg.RT.datetime = "2026-06-01T00:00:00.000000Z"   # well past the deadline
+        self.review()
+        self.assertEqual(self.job()["status"], "passed")
+        self.assert_error(lambda: self.call(self.c.reclaim_timeout, BUYER, "job1"),
+                          "only a delivered job past its review deadline")
 
 
 if __name__ == "__main__":

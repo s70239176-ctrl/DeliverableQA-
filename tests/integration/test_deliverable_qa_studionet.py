@@ -39,13 +39,23 @@ class TestStudioNetLifecycle(unittest.TestCase):
 
     def _run(self, job_id, rubric, delivery_url):
         r = self.buyer_view.open_escrow(
-            args=[job_id, "https://example.org", rubric, "", "", 80]).transact(value=10)
+            args=[job_id, "https://example.org", rubric, "", "", 80, self.seller.address, 7]).transact(value=10)
         self.assertTrue(tx_execution_succeeded(r))
         r = self.seller_view.deliver(args=[job_id, delivery_url]).transact()
         self.assertTrue(tx_execution_succeeded(r))
         r = self.buyer_view.review(args=[job_id]).transact()
         self.assertTrue(tx_execution_succeeded(r))
         return json.loads(self.buyer_view.get_job(args=[job_id]).call())
+
+    def test_unpinned_account_cannot_deliver(self):
+        job_id = "it-unpinned-1"
+        r = self.buyer_view.open_escrow(
+            args=[job_id, "https://example.org", PASS_RUBRIC, "", "", 80, self.seller.address, 7]).transact(value=10)
+        self.assertTrue(tx_execution_succeeded(r))
+        stranger = create_account()
+        stranger_view = self.buyer_view.connect(stranger)
+        r = stranger_view.deliver(args=[job_id, "https://example.com"]).transact()
+        self.assertFalse(tx_execution_succeeded(r))
 
     def test_pass_path_credits_seller(self):
         job = self._run("it-pass-1", PASS_RUBRIC, "https://example.com")
