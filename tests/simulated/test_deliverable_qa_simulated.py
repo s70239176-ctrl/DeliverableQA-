@@ -73,7 +73,10 @@ class Base(unittest.TestCase):
         fg.RT.pages[DELIV] = (200, delivery.encode())
 
     def open(self, job_id="job1", checks="pass_example", value=100, spec=SPEC, demo="", brand="", threshold=80,
-             seller=SELLER, window=7):
+             seller=SELLER.as_hex, window=7):
+        # seller is a plain hex string, matching real calldata for an Address-typed
+        # public argument (the runtime hands it through undecoded; only gl.message.*
+        # fields arrive pre-wrapped as Address). See open_escrow's own comment.
         self.deposited += value
         return self.call(self.c.open_escrow, BUYER, job_id, spec, rubric(checks) if checks in
                          ("pass_example", "fail_example", "brand_example", "cancel_example", "quote_api_example")
@@ -485,7 +488,7 @@ class TestOpenEscrow(Base):
     def test_rejections(self):
         c = self.c
 
-        def oe(job_id, spec, checks, demo="", brand="", threshold=80, seller=SELLER, window=7, value=5):
+        def oe(job_id, spec, checks, demo="", brand="", threshold=80, seller=SELLER.as_hex, window=7, value=5):
             return self.call(c.open_escrow, BUYER, job_id, spec, checks, demo, brand, fg.u32(threshold), seller,
                              fg.u32(window), value=value)
 
@@ -508,7 +511,8 @@ class TestOpenEscrow(Base):
             ("job_id must be", lambda: oe("x" * 65, SPEC, rubric("pass_example"))),
             ("must be a JSON list", lambda: oe("a", SPEC, json.dumps([{"id": "c%d" % i} for i in range(21)]))),
             ("too long", lambda: oe("a", SPEC, json.dumps([{"id": "c", "detail": "d" * 7000}]))),
-            ("seller required", lambda: oe("a", SPEC, rubric("pass_example"), seller=addr("0"))),
+            ("seller required", lambda: oe("a", SPEC, rubric("pass_example"), seller="0x" + "0" * 40)),
+            ("seller must be a valid address", lambda: oe("a", SPEC, rubric("pass_example"), seller="not-an-address")),
             ("review_window_days must be", lambda: oe("a", SPEC, rubric("pass_example"), window=0)),
             ("review_window_days must be", lambda: oe("a", SPEC, rubric("pass_example"), window=366)),
         ]
@@ -560,7 +564,7 @@ class TestStateMachine(Base):
     def test_deliver_by_unpinned_account_rejected_even_if_first(self):
         # The exact race the pin closes: a stranger (or even the buyer) can no longer
         # become the payee by racing to call deliver() first.
-        self.open(seller=SELLER)
+        self.open()
         for stranger in (THIRD, BUYER):
             with self.subTest(stranger=stranger):
                 self.assert_error(lambda: self.deliver(sender=stranger), "only the pinned seller")

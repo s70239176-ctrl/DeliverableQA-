@@ -43,7 +43,9 @@ Anything marked "not yet done" must be filled in with real transaction evidence 
 A steward review flagged two gaps against the fund-safety bar, both previously called out under "Known
 limitations" below:
 
-1. **Seller authorization.** `open_escrow` now takes a `seller: Address` argument; `deliver` requires
+1. **Seller authorization.** `open_escrow` now takes a `seller: str` address argument (converted to `Address`
+   internally, like `get_credit`'s existing `addr: str` pattern -- a public method's `Address`-typed argument
+   arrives undecoded on Studio, so `str` + explicit conversion is what actually works); `deliver` requires
    `gl.message.sender_address == job.seller`. An unrelated account can no longer become the payout recipient by
    calling `deliver` first.
 2. **Escrow recovery.** `open_escrow` also takes `review_window_days` (1-365). `deliver` stamps

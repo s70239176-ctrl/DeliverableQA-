@@ -491,7 +491,7 @@ class DeliverableQA(gl.Contract):
     # ---- writes ----
     @gl.public.write.payable
     def open_escrow(self, job_id: str, spec_url: str, checks_json: str, demo_url: str,
-                    brand_url: str, pass_threshold: u32, seller: Address,
+                    brand_url: str, pass_threshold: u32, seller: str,
                     review_window_days: u32) -> None:
         job_id = _check_job_id(job_id)
         if job_id in self.jobs:
@@ -507,8 +507,15 @@ class DeliverableQA(gl.Contract):
         if threshold < 1 or threshold > 100:
             raise gl.vm.UserError("pass_threshold must be 1-100")
         # Pin the intended seller now, at the buyer's own risk/choice, so an unrelated
-        # account cannot become the payee simply by calling deliver() first.
-        if seller == Address(ZERO_ADDRESS_HEX):
+        # account cannot become the payee simply by calling deliver() first. Address is
+        # taken as str (like get_credit) and converted explicitly: the runtime hands a
+        # public method's Address-annotated argument through undecoded, so storing it
+        # directly would put a raw int in an Address-typed storage slot.
+        try:
+            seller_addr = Address(seller.strip())
+        except Exception:
+            raise gl.vm.UserError("seller must be a valid address")
+        if seller_addr == Address(ZERO_ADDRESS_HEX):
             raise gl.vm.UserError("seller required")
         window = int(review_window_days)
         if window < MIN_REVIEW_WINDOW_DAYS or window > MAX_REVIEW_WINDOW_DAYS:
@@ -516,7 +523,7 @@ class DeliverableQA(gl.Contract):
 
         self.jobs[job_id] = Job(
             buyer=gl.message.sender_address,
-            seller=seller,
+            seller=seller_addr,
             spec_url=spec_url,
             checks_json=checks_json,
             demo_url=demo_url,
